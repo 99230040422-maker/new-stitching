@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
+import base64
+import hashlib
+import hmac
+import os
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 try:
@@ -16,16 +19,33 @@ except ImportError:
     from models import User
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
+PBKDF2_ITERATIONS = 390000
 
 
 def hash_password(raw_password: str) -> str:
-    return pwd_context.hash(raw_password)
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", raw_password.encode("utf-8"), salt, PBKDF2_ITERATIONS
+    )
+    salt_b64 = base64.b64encode(salt).decode("ascii")
+    digest_b64 = base64.b64encode(digest).decode("ascii")
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt_b64}${digest_b64}"
 
 
 def verify_password(raw_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(raw_password, hashed_password)
+    try:
+        algorithm, iterations, salt_b64, digest_b64 = hashed_password.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        salt = base64.b64decode(salt_b64.encode("ascii"))
+        expected = base64.b64decode(digest_b64.encode("ascii"))
+        calculated = hashlib.pbkdf2_hmac(
+            "sha256", raw_password.encode("utf-8"), salt, int(iterations)
+        )
+        return hmac.compare_digest(calculated, expected)
+    except Exception:
+        return False
 
 
 def create_access_token(user_id: int, role: str) -> str:
